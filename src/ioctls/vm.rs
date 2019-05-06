@@ -307,128 +307,14 @@ impl VmFd {
     /// vm.set_user_memory_region(mem_region).unwrap();
     ///
     /// // Dummy x86 code that just calls halt.
-    /// let x86_code = [
+    /// #[cfg(target_arch = "x86_64")]
+    /// let code = [
     ///         0xf4,             /* hlt */
     /// ];
     ///
-    /// // Write the code in the guest memory. This will generate a dirty page.
-    /// unsafe {
-    ///     let mut slice = slice::from_raw_parts_mut(load_addr, mem_size);
-    ///     slice.write(&x86_code).unwrap();
-    /// }
-    ///
-    /// let vcpu_fd = vm.create_vcpu(0).unwrap();
-    ///
-    /// let mut vcpu_sregs = vcpu_fd.get_sregs().unwrap();
-    /// vcpu_sregs.cs.base = 0;
-    /// vcpu_sregs.cs.selector = 0;
-    /// vcpu_fd.set_sregs(&vcpu_sregs).unwrap();
-    ///
-    /// let mut vcpu_regs = vcpu_fd.get_regs().unwrap();
-    ///  // Set the Instruction Pointer to the guest address where we loaded the code.
-    /// vcpu_regs.rip = guest_addr;
-    /// vcpu_regs.rax = 2;
-    /// vcpu_regs.rbx = 3;
-    /// vcpu_regs.rflags = 2;
-    /// vcpu_fd.set_regs(&vcpu_regs).unwrap();
-    ///
-    /// loop {
-    ///     match vcpu_fd.run().expect("run failed") {
-    ///         VcpuExit::Hlt => {
-    ///             // The code snippet dirties 1 page when loading the code in memory.
-    ///             let dirty_pages_bitmap = vm.get_dirty_log(0, mem_size).unwrap();
-    ///             let dirty_pages = dirty_pages_bitmap
-    ///                     .into_iter()
-    ///                     .map(|page| page.count_ones())
-    ///                     .fold(0, |dirty_page_count, i| dirty_page_count + i);
-    ///             assert_eq!(dirty_pages, 1);
-    ///             break;
-    ///         }
-    ///         exit_reason => panic!("unexpected exit reason: {:?}", exit_reason),
-    ///     }
-    /// }
-    /// ```
-    ///
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    pub fn get_dirty_log(&self, slot: u32, memory_size: usize) -> Result<Vec<u64>> {
-        // Compute the length of the bitmap needed for all dirty pages in one memory slot.
-        // One memory page is 4KiB (4096 bits) and `KVM_GET_DIRTY_LOG` returns one dirty bit for
-        // each page.
-        let page_size = 4 << 10;
-
-        let div_round_up = |dividend, divisor| (dividend + divisor - 1) / divisor;
-        // For ease of access we are saving the bitmap in a u64 vector. We are using ceil to
-        // make sure we count all dirty pages even when `mem_size` is not a multiple of
-        // page_size * 64.
-        let bitmap_size = div_round_up(memory_size, page_size * 64);
-        let mut bitmap = vec![0; bitmap_size];
-        let b_data = bitmap.as_mut_ptr() as *mut c_void;
-        let dirtylog = kvm_dirty_log {
-            slot,
-            padding1: 0,
-            __bindgen_anon_1: kvm_dirty_log__bindgen_ty_1 {
-                dirty_bitmap: b_data,
-            },
-        };
-        // Safe because we know that our file is a VM fd, and we know that the amount of memory
-        // we allocated for the bitmap is at least one bit per page.
-        let ret = unsafe { ioctl_with_ref(self, KVM_GET_DIRTY_LOG(), &dirtylog) };
-        if ret == 0 {
-            Ok(bitmap)
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    }
-
-    /// Gets the bitmap of pages dirtied since the last call of this function.
-    ///
-    /// Leverages the dirty page logging feature in KVM. As a side-effect, this also resets the
-    /// bitmap inside the kernel. For the dirty log to be available, you have to set the flag
-    /// `KVM_MEM_LOG_DIRTY_PAGES` when creating guest memory regions.
-    ///
-    /// Check the documentation for `KVM_GET_DIRTY_LOG`.
-    ///
-    /// # Arguments
-    ///
-    /// * `slot` - Guest memory slot identifier.
-    /// * `memory_size` - Size of the memory region.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # extern crate kvm_ioctls;
-    /// # extern crate kvm_bindings;
-    /// # use std::io::Write;
-    /// # use std::ptr::null_mut;
-    /// # use std::slice;
-    /// # use kvm_ioctls::{Kvm, VmFd, VcpuFd, VcpuExit};
-    /// # use kvm_bindings::{kvm_userspace_memory_region, KVM_MEM_LOG_DIRTY_PAGES};
-    /// # let kvm = Kvm::new().unwrap();
-    /// # let vm = kvm.create_vm().unwrap();
-    /// let mem_size = 0x10000;
-    /// let guest_addr: u64 = 0x10000;
-    /// let load_addr: *mut u8 = unsafe {
-    ///     libc::mmap(
-    ///         null_mut(),
-    ///         mem_size,
-    ///         libc::PROT_READ | libc::PROT_WRITE,
-    ///         libc::MAP_ANONYMOUS | libc::MAP_SHARED | libc::MAP_NORESERVE,
-    ///         -1,
-    ///         0,
-    ///     ) as *mut u8
-    /// };
-    ///
-    /// // Initialize a guest memory region using the flag `KVM_MEM_LOG_DIRTY_PAGES`.
-    /// let mem_region = kvm_userspace_memory_region {
-    ///     slot: 0,
-    ///     guest_phys_addr: guest_addr,
-    ///     memory_size: mem_size as u64,
-    ///     userspace_addr: load_addr as u64,
-    ///     flags: KVM_MEM_LOG_DIRTY_PAGES,
-    /// };
-    /// vm.set_user_memory_region(mem_region).unwrap();
-    ///
-    /// let aarch64_code = [
+    /// // aarch64 code that generates an MMIO Write.
+    /// #[cfg(target_arch = "aarch64")]
+    /// let code = [
     ///     0x01, 0x00, 0x00, 0x10, /* adr x1, <this address> */
     ///     0x22, 0x10, 0x00, 0xb9, /* str w2, [x1, #16]; write to this page */
     ///     0x02, 0x00, 0x00, 0xb9, /* str w2, [x0]; force MMIO exit */
@@ -438,29 +324,62 @@ impl VmFd {
     /// // Write the code in the guest memory. This will generate a dirty page.
     /// unsafe {
     ///     let mut slice = slice::from_raw_parts_mut(load_addr, mem_size);
-    ///     slice.write(&aarch64_code).unwrap();
+    ///     slice.write(&code).unwrap();
     /// }
     ///
     /// let vcpu_fd = vm.create_vcpu(0).unwrap();
-    /// let mut kvi = kvm_bindings::kvm_vcpu_init::default();
-    /// vm.get_preferred_target(&mut kvi).unwrap();
-    /// vcpu_fd.vcpu_init(&kvi).unwrap();
     ///
-    /// let core_reg_base: u64 = 0x6030_0000_0010_0000;
-    /// let mmio_addr: u64 = guest_addr + mem_size as u64;
-    /// vcpu_fd.set_one_reg(core_reg_base + 2 * 32, guest_addr); // set PC
-    /// vcpu_fd.set_one_reg(core_reg_base + 2 * 0, mmio_addr); // set X0
+    /// // Setup the vCPU. This code is aarch64 specific.
+    /// #[cfg(target_arch = "aarch64")] {
+    ///     let mut kvi = kvm_bindings::kvm_vcpu_init::default();
+    ///     vm.get_preferred_target(&mut kvi).unwrap();
+    ///     vcpu_fd.vcpu_init(&kvi).unwrap();
+    /// }
+    ///
+    /// // Setup registers on aarch64.
+    /// #[cfg (target_arch = "aarch64")] {
+    ///     let core_reg_base: u64 = 0x6030_0000_0010_0000;
+    ///     let mmio_addr: u64 = guest_addr + mem_size as u64;
+    ///     vcpu_fd.set_one_reg(core_reg_base + 2 * 32, guest_addr); // set PC
+    ///     vcpu_fd.set_one_reg(core_reg_base + 2 * 0, mmio_addr); // set X0
+    /// }
+    ///
+    /// // Setup registers. For x86_64 this code sets `kvm_regs` and `kvm_sregs`.
+    /// #[cfg(target_arch = "x86_64")] {
+    ///     let mut vcpu_sregs = vcpu_fd.get_sregs().unwrap();
+    ///     vcpu_sregs.cs.base = 0;
+    ///     vcpu_sregs.cs.selector = 0;
+    ///     vcpu_fd.set_sregs(&vcpu_sregs).unwrap();
+    ///
+    ///     let mut vcpu_regs = vcpu_fd.get_regs().unwrap();
+    ///     // Set the Instruction Pointer to the guest address where we loaded the code.
+    ///     vcpu_regs.rip = guest_addr;
+    ///     vcpu_regs.rax = 2;
+    ///     vcpu_regs.rbx = 3;
+    ///     vcpu_regs.rflags = 2;
+    ///     vcpu_fd.set_regs(&vcpu_regs).unwrap();
+    /// }
+    ///
+    /// let check_dirty_pages = || {
+    ///     // The code snippet dirties 1 page when loading the code in memory.
+    ///     let dirty_pages_bitmap = vm.get_dirty_log(0, mem_size).unwrap();
+    ///     let dirty_pages = dirty_pages_bitmap
+    ///         .into_iter()
+    ///         .map(|page| page.count_ones())
+    ///         .fold(0, |dirty_page_count, i| dirty_page_count + i);
+    ///     assert_eq!(dirty_pages, 1);
+    /// };
     ///
     /// loop {
     ///     match vcpu_fd.run().expect("run failed") {
+    ///         #[cfg(target_arch = "x86_64")]
+    ///         VcpuExit::Hlt => {
+    ///             check_dirty_pages();
+    ///             break;
+    ///         }
+    ///         #[cfg(target_arch = "aarch64")]
     ///         VcpuExit::MmioWrite(addr, data) => {
-    ///             // The code snippet dirties its own page.
-    ///             let dirty_pages_bitmap = vm.get_dirty_log(0, mem_size).unwrap();
-    ///             let dirty_pages = dirty_pages_bitmap
-    ///                     .into_iter()
-    ///                     .map(|page| page.count_ones())
-    ///                     .fold(0, |dirty_page_count, i| dirty_page_count + i);
-    ///             assert_eq!(dirty_pages, 1);
+    ///             check_dirty_pages();
     ///             break;
     ///         }
     ///         exit_reason => panic!("unexpected exit reason: {:?}", exit_reason),
@@ -468,11 +387,11 @@ impl VmFd {
     /// }
     /// ```
     ///
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
     pub fn get_dirty_log(&self, slot: u32, memory_size: usize) -> Result<Vec<u64>> {
         // Compute the length of the bitmap needed for all dirty pages in one memory slot.
-        // One memory page may be as small as 4KiB (4096 bits) and `KVM_GET_DIRTY_LOG`
-        // returns one dirty bit for each page.
+        // One memory page is 4KiB (4096 bits) and `KVM_GET_DIRTY_LOG` returns one dirty bit for
+        // each page.
         let page_size = 4 << 10;
 
         let div_round_up = |dividend, divisor| (dividend + divisor - 1) / divisor;

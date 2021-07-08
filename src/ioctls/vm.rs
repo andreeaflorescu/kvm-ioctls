@@ -42,8 +42,8 @@ pub enum IoEventAddress {
 /// [KVM API documentation](https://www.kernel.org/doc/Documentation/virtual/kvm/api.txt).
 ///
 pub struct NoDatamatch;
-impl Into<u64> for NoDatamatch {
-    fn into(self) -> u64 {
+impl From<NoDatamatch> for u64 {
+    fn from(_: NoDatamatch) -> u64 {
         0
     }
 }
@@ -1291,15 +1291,14 @@ pub(crate) fn create_gic_device(vm: &VmFd, flags: u32) -> DeviceFd {
         fd: 0,
         flags,
     };
-    let device_fd = match vm.create_device(&mut gic_device) {
+    match vm.create_device(&mut gic_device) {
         Ok(fd) => fd,
         Err(_) => {
             gic_device.type_ = kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V2;
             vm.create_device(&mut gic_device)
                 .expect("Cannot create KVM vGIC device")
         }
-    };
-    device_fd
+    }
 }
 
 /// Set supported number of IRQs for vGIC.
@@ -1378,16 +1377,20 @@ mod tests {
         let vm = kvm.create_vm().unwrap();
         assert!(vm.create_irq_chip().is_ok());
 
-        let mut irqchip = kvm_irqchip::default();
-        irqchip.chip_id = KVM_IRQCHIP_PIC_MASTER;
+        let mut irqchip = kvm_irqchip {
+            chip_id: KVM_IRQCHIP_PIC_MASTER,
+            ..Default::default()
+        };
         // Set the irq_base to a non-default value to check that set & get work.
         irqchip.chip.pic.irq_base = 10;
         assert!(vm.set_irqchip(&irqchip).is_ok());
 
         // We initialize a dummy irq chip (`other_irqchip`) in which the
         // function `get_irqchip` returns its result.
-        let mut other_irqchip = kvm_irqchip::default();
-        other_irqchip.chip_id = KVM_IRQCHIP_PIC_MASTER;
+        let mut other_irqchip = kvm_irqchip {
+            chip_id: KVM_IRQCHIP_PIC_MASTER,
+            ..Default::default()
+        };
         assert!(vm.get_irqchip(&mut other_irqchip).is_ok());
 
         // Safe because we know that the irqchip type is PIC.
@@ -1443,8 +1446,10 @@ mod tests {
         let orig = vm.get_clock().unwrap();
 
         // Reset time.
-        let mut fudged = kvm_clock_data::default();
-        fudged.clock = 10;
+        let fudged = kvm_clock_data {
+            clock: 10,
+            ..Default::default()
+        };
         vm.set_clock(&fudged).unwrap();
 
         // Get new time.
@@ -1633,7 +1638,7 @@ mod tests {
         let badf_errno = libc::EBADF;
 
         let faulty_vm_fd = VmFd {
-            vm: unsafe { File::from_raw_fd(-1) },
+            vm: unsafe { File::from_raw_fd(-2) },
             run_size: 0,
         };
 
@@ -1768,8 +1773,10 @@ mod tests {
     fn test_enable_split_irqchip_cap() {
         let kvm = Kvm::new().unwrap();
         let vm = kvm.create_vm().unwrap();
-        let mut cap: kvm_enable_cap = Default::default();
-        cap.cap = KVM_CAP_SPLIT_IRQCHIP;
+        let mut cap = kvm_enable_cap {
+            cap: KVM_CAP_SPLIT_IRQCHIP,
+            ..Default::default()
+        };
         // As per the KVM documentation, KVM_CAP_SPLIT_IRQCHIP only emulates
         // the local APIC in kernel, expecting that a userspace IOAPIC will
         // be implemented by the VMM.
@@ -1805,7 +1812,7 @@ mod tests {
         let vm = kvm.create_vm().unwrap();
 
         // Fails when an arbitrarily large value
-        let err = vm.create_vcpu(65537 as u64).err();
+        let err = vm.create_vcpu(65537_u64).err();
         assert_eq!(err.unwrap().errno(), libc::EINVAL);
 
         // Fails when input `id` = `max_vcpu_id`
